@@ -19,8 +19,6 @@ fn main() {
         }
     };
 
-    let cwd = env::current_dir().expect("Could not determine the current directory");
-
     let repo = get_repo();
 
     let head = match repo.head() {
@@ -68,8 +66,44 @@ fn move_commits(n_commits: i32, starting_commit: Commit<'_>) {
     }
 }
 
-fn move_forward_commits(_n_commits: i32, _starting_commit: Commit<'_>) {
+fn move_forward_commits(n_commits: i32, starting_commit: Commit<'_>) {
+    if n_commits == 0 {
+        checkout_commit(starting_commit.id().to_string());
+        return; 
+    }
 
+    let children = find_commit_children(&starting_commit);
+
+    if children.len() == 0 {
+        eprintln!("Could not complete action: A commit in the path has no parents");
+        process::exit(1);
+    }
+
+    if children.len() > 1 {
+        eprintln!("Could not complete action: A commit in the path has multiple parents");
+        process::exit(1);
+    }
+
+    let repo = get_repo();
+
+    let oid_str = children.first().expect("Could not get parent commit").to_string();
+    let commit_oid = match Oid::from_str(&oid_str) {
+        Ok(oid) => oid,
+        Err(e) => {
+            eprintln!("Could not parse commit ID for parent of {}: {}", starting_commit.id().to_string(), e);
+            process::exit(1);
+        }
+    };
+
+    let commit = match repo.find_commit(commit_oid) {
+        Ok(commit) => commit,
+        Err(e) => {
+            eprintln!("Failed to find commit for checkout: {}", e);
+            process::exit(1);
+        }
+    };
+
+    move_forward_commits(n_commits - 1, commit)
 }
 
 fn move_back_commits(n_commits: i32, starting_commit: Commit<'_>) {
@@ -147,4 +181,29 @@ fn checkout_commit(oid_str: String) {
     repo.set_head_detached(commit.id()).expect("Could not set detached HEAD");
     let mut checkout_builder = CheckoutBuilder::new();
     let _ = repo.checkout_tree(&tree.as_object(), Some(&mut checkout_builder));
+}
+
+fn find_commit_children(commit: &Commit) -> Vec<Oid> {
+    let repo = get_repo();
+    
+    let mut revwalk = repo.revwalk().expect("Could not reverse walk repo");
+    revwalk.push_head().expect("Could not push head");
+    revwalk.set_sorting(git2::Sort::TOPOLOGICAL).expect("Could not set sorting");
+
+    let commit_id = commit.id();
+    let mut children = vec![];
+
+    for oid in revwalk {
+        let oid = oid.expect("Could not get OID");
+        let child_commit = repo.find_commit(oid).expect("Could not find commit");
+
+        for parent in child_commit.parents() {
+            if parent.id() == commit_id {
+                children.push(child_commit.id());
+                break;
+            }
+        }
+    }
+
+    return children;
 }
